@@ -1,0 +1,16 @@
+# 数据文件（含 API Key）
+growth_data.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
