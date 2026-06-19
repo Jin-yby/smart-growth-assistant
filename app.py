@@ -8,11 +8,12 @@ import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from datetime import datetime, timedelta
 import calendar
+import json
 import threading
 
 import config
 from services import DataManager, AIClient
-from widgets import Card, StatCard, TaskRow
+from widgets import Card, StatCard, TaskRow, InsightCard
 
 
 # ============================================================
@@ -39,6 +40,9 @@ class App:
 
         if not self.api_key:
             self.win.after(500, self._prompt_api_key)
+
+        # Show discover badge if there are pending questions
+        self.win.after(600, self._update_discover_badge)
 
     # ═══ Layout ═══
     def _build_layout(self):
@@ -68,6 +72,7 @@ class App:
             ("tasks", "✅  Tasks"),
             ("ai", "🤖  AI Planner"),
             ("vision", "🌟  Vision"),
+            ("discover", "🔍  Discover"),
         ]:
             b = tk.Label(self.sidebar, text=text, font=("Segoe UI", 12), bg=config.COLORS["bg_side"],
                          fg=config.COLORS["text_sub"], anchor="w", padx=24, pady=11, cursor="hand2")
@@ -117,11 +122,26 @@ class App:
             "tasks": self._show_tasks,
             "ai": self._show_ai,
             "vision": self._show_vision,
+            "discover": self._show_discover,
         }[key]()
 
     def _clear_main(self):
         for w in self.main_area.winfo_children():
             w.destroy()
+
+    def _update_discover_badge(self):
+        """Show pending question count badge on Discover nav item."""
+        btn = self.nav_btns.get("discover")
+        if not btn:
+            return
+        count = self.db.get_pending_insight_count()
+        current_text = btn.cget("text")
+        # Remove existing badge suffix
+        base = current_text.split("  ·")[0]
+        if count > 0:
+            btn.config(text=f"{base}  ·{count}")
+        else:
+            btn.config(text=base)
 
     def _toggle_theme(self):
         self.is_dark = not self.is_dark
@@ -1271,6 +1291,22 @@ class App:
             save_btn.pack(pady=(4, 10))
             self.ai_input.delete("1.0", "end")
 
+            # Auto-trigger discover analysis after diary entry (with cooldown)
+            task_count = len(self.db.data.get("tasks", []))
+            diary_count = len(self.db.data.get("diary", []))
+            if task_count + diary_count >= 3:
+                def _auto_discover():
+                    last = self.db.get_discover_last_run()
+                    if last:
+                        try:
+                            last_dt = datetime.strptime(last, "%Y-%m-%d %H:%M")
+                            if (datetime.now() - last_dt).total_seconds() < 3600:
+                                return  # Within cooldown
+                        except Exception:
+                            pass
+                    self._run_discover_analysis()
+                self.win.after(1500, _auto_discover)
+
     # ═══ 5. Vision ═══
     def _show_vision(self):
         self._clear_main()
@@ -1529,6 +1565,251 @@ class App:
         self.db.add_vision(raw, result)
         self.vision_input.delete("1.0", "end")
         messagebox.showinfo("Saved", "Vision saved!\nScroll down to see your vision timeline.")
+
+    # ═══ 6. Discover — AI Proactive Inquiry ═══
+    def _show_discover(self):
+        self._clear_main()
+        _, __, inner = self._scroll(self.main_area)
+
+        # Header
+        tk.Label(inner, text="🔍  Discover", font=("Segoe UI", 20, "bold"),
+                 bg=config.COLORS["bg_main"], fg=config.COLORS["text_main"]
+                 ).pack(fill="x", padx=28, pady=(18, 4))
+        tk.Label(inner,
+                 text="AI observes your data patterns and asks questions to help "
+                      "you understand yourself better.",
+                 font=("Segoe UI", 10), bg=config.COLORS["bg_main"],
+                 fg=config.COLORS["text_sub"]).pack(fill="x", padx=28, pady=(0, 8))
+
+        # Analyze button row
+        btn_frame = tk.Frame(inner, bg=config.COLORS["bg_main"])
+        btn_frame.pack(fill="x", padx=28, pady=(0, 16))
+        analyze_btn = tk.Label(btn_frame, text="🔬  Analyze My Patterns",
+                               font=("Segoe UI", 13, "bold"),
+                               bg=config.COLORS["purple"], fg="#FFF",
+                               padx=24, pady=14, cursor="hand2")
+        analyze_btn.pack(side="left")
+        analyze_btn.bind("<Button-1>", lambda e: self._run_discover_analysis())
+
+        self.discover_status = tk.Label(btn_frame, text="",
+                                        font=("Segoe UI", 9),
+                                        bg=config.COLORS["bg_main"],
+                                        fg=config.COLORS["text_muted"])
+        self.discover_status.pack(side="left", padx=16)
+
+        # Last run info
+        last_run = self.db.get_discover_last_run()
+        if last_run:
+            tk.Label(btn_frame, text=f"Last analysis: {last_run}",
+                     font=("Segoe UI", 9), bg=config.COLORS["bg_main"],
+                     fg=config.COLORS["text_muted"]).pack(side="right")
+
+        # ── Section 1: Pending Questions ──
+        pending_insights = self.db.get_insights("pending")
+        pc = Card(inner, title="💬  AI wants to know...", icon="", pad=16)
+        pc.pack(fill="x", padx=28, pady=(0, 12))
+
+        if pending_insights:
+            for insight in pending_insights:
+                InsightCard(pc, insight,
+                            on_answer=self._answer_insight
+                            ).pack(fill="x", pady=4)
+        else:
+            tk.Label(pc,
+                     text='No pending questions. Click "Analyze My Patterns" '
+                          'to let AI discover something about you!',
+                     font=("Segoe UI", 10), bg=config.COLORS["bg_card"],
+                     fg=config.COLORS["text_muted"]).pack(pady=12)
+
+        # ── Section 2: Confirmed Patterns ──
+        confirmed_insights = self.db.get_insights("confirmed")
+        cc = Card(inner, title="✅  Confirmed Patterns", icon="", pad=16)
+        cc.pack(fill="x", padx=28, pady=(0, 12))
+
+        if confirmed_insights:
+            for insight in confirmed_insights:
+                InsightCard(cc, insight).pack(fill="x", pady=4)
+        else:
+            tk.Label(cc,
+                     text="Answer AI's questions above to build your self-knowledge base.",
+                     font=("Segoe UI", 10), bg=config.COLORS["bg_card"],
+                     fg=config.COLORS["text_muted"]).pack(pady=12)
+
+        # ── Section 3: Refuted Hypotheses ──
+        refuted_insights = self.db.get_insights("refuted")
+        rc = Card(inner, title="❌  Refuted Hypotheses", icon="", pad=16)
+        rc.pack(fill="x", padx=28, pady=(0, 20))
+
+        if refuted_insights:
+            self.refuted_visible = tk.BooleanVar(value=False)
+            toggle_btn = tk.Label(rc,
+                                  text=f"▶  Show refuted ({len(refuted_insights)})",
+                                  font=("Segoe UI", 10), bg=config.COLORS["bg_card"],
+                                  fg=config.COLORS["purple"], cursor="hand2", anchor="w")
+            toggle_btn.pack(fill="x", pady=(0, 6))
+
+            self.refuted_container = tk.Frame(rc, bg=config.COLORS["bg_card"])
+
+            def _toggle_refuted():
+                if self.refuted_visible.get():
+                    self.refuted_container.pack_forget()
+                    toggle_btn.config(
+                        text=f"▶  Show refuted ({len(refuted_insights)})")
+                    self.refuted_visible.set(False)
+                else:
+                    self.refuted_container.pack(fill="x")
+                    toggle_btn.config(text="▼  Hide refuted")
+                    self.refuted_visible.set(True)
+                    if not self.refuted_container.winfo_children():
+                        for insight in refuted_insights:
+                            InsightCard(self.refuted_container, insight).pack(
+                                fill="x", pady=4)
+
+            toggle_btn.bind("<Button-1>", lambda e: _toggle_refuted())
+        else:
+            tk.Label(rc, text="No refuted hypotheses yet.",
+                     font=("Segoe UI", 10), bg=config.COLORS["bg_card"],
+                     fg=config.COLORS["text_muted"]).pack(pady=12)
+
+    def _run_discover_analysis(self):
+        """Trigger AI pattern analysis on user data."""
+        if self.ai_loading:
+            return
+        if not self.api_key:
+            self._prompt_api_key()
+            return
+        if not self.api_key:
+            return
+
+        # Cooldown: max once per hour to save API credits
+        last = self.db.get_discover_last_run()
+        if last:
+            try:
+                last_dt = datetime.strptime(last, "%Y-%m-%d %H:%M")
+                diff = (datetime.now() - last_dt).total_seconds()
+                if diff < 3600:
+                    mins_left = 60 - int(diff / 60)
+                    messagebox.showinfo(
+                        "Cooldown",
+                        f"Please wait ~{mins_left} minutes before analyzing again.\n"
+                        "AI analysis uses API credits — limited to once per hour.")
+                    return
+            except Exception:
+                pass
+
+        self.ai_loading = True
+        self.discover_status.config(text="⏳  Analyzing your data patterns...")
+
+        # Aggregate data and send to AI
+        data_summary = self.db.aggregate_for_discover()
+        user_msg = json.dumps(data_summary, ensure_ascii=False, indent=2)
+
+        def _work():
+            result = AIClient.ask("discover", user_msg, self.api_key)
+            self.win.after(0, lambda: self._show_discover_result(result))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _show_discover_result(self, result):
+        """Handle AI pattern analysis response."""
+        self.ai_loading = False
+        self.discover_status.config(text="")
+
+        if "error" in result:
+            messagebox.showerror("AI Error", result["error"])
+            return
+
+        # Persist insights
+        insights_data = result.get("insights", [])
+        count_added = 0
+        for ins in insights_data:
+            self.db.add_insight({
+                "title": ins.get("title", ""),
+                "hypothesis": ins.get("hypothesis", ""),
+                "evidence": ins.get("evidence", []),
+                "confidence": ins.get("confidence", 0.5),
+                "question": ins.get("question", ""),
+                "category": ins.get("category", "general"),
+                "status": "pending",
+            })
+            count_added += 1
+
+        self.db.set_discover_last_run()
+        self._update_discover_badge()
+        self._show_discover()
+
+        summary = result.get("summary", "")
+        if count_added > 0:
+            msg = f"Found {count_added} new insight{'s' if count_added > 1 else ''}!"
+            if summary:
+                msg += f"\n\n{summary}"
+            messagebox.showinfo("Analysis Complete", msg)
+        else:
+            if summary:
+                messagebox.showinfo("Analysis Complete",
+                                    f"No strong patterns found yet.\n\n{summary}")
+            else:
+                messagebox.showinfo("Analysis Complete",
+                                    "No strong patterns found yet.\n"
+                                    "Keep using the app — more data helps AI find patterns!")
+
+    def _answer_insight(self, insight_id, answer_text):
+        """User answers a pending insight question. AI validates the answer."""
+        answer_text = answer_text.strip()
+        if not answer_text:
+            messagebox.showwarning("Warning", "Please type your answer first!")
+            return
+        if self.ai_loading:
+            return
+
+        # Find the insight
+        insight = None
+        for i in self.db.data.get("insights", []):
+            if i["id"] == insight_id:
+                insight = i
+                break
+        if not insight:
+            return
+
+        self.ai_loading = True
+        self.discover_status.config(text="⏳  AI is thinking about your answer...")
+
+        # Build validation prompt
+        val_text = (
+            f"Hypothesis: {insight['hypothesis']}\n"
+            f"Question asked: {insight['question']}\n"
+            f"User's answer: \"{answer_text}\""
+        )
+
+        def _work():
+            result = AIClient.ask("discover_validate", val_text, self.api_key)
+            self.win.after(0, lambda: self._show_answer_result(
+                insight_id, answer_text, result))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _show_answer_result(self, insight_id, answer_text, result):
+        """Handle AI validation of a user's answer."""
+        self.ai_loading = False
+        self.discover_status.config(text="")
+
+        if "error" in result:
+            messagebox.showerror("AI Error", result["error"])
+            return
+
+        status = result.get("status", "confirmed")
+        reply = result.get("reply", "")
+
+        self.db.update_insight(insight_id,
+                               status=status,
+                               user_answer=answer_text,
+                               confirmed_at=datetime.now().strftime("%Y-%m-%d"))
+        self._update_discover_badge()
+        self._show_discover()
+
+        if reply:
+            title = "✅ Insight Confirmed!" if status == "confirmed" else "❌ Insight Refuted"
+            messagebox.showinfo(title, reply)
 
     # ═══ Run ═══
     def run(self):

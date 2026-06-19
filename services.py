@@ -92,10 +92,16 @@ class DataManager:
                     for k, v in defaults.items():
                         if k not in t:
                             t[k] = v
+                # Backward-compat: ensure new fields exist
+                if "insights" not in data:
+                    data["insights"] = []
+                if "discover_last_run" not in data:
+                    data["discover_last_run"] = None
                 return data
             except Exception:
                 pass
-        return {"tasks": [], "next_id": 1, "diary": [], "visions": [], "api_key": ""}
+        return {"tasks": [], "next_id": 1, "diary": [], "visions": [],
+                "insights": [], "discover_last_run": None, "api_key": ""}
 
     def save(self):
         with open(self.filename, "w", encoding="utf-8") as f:
@@ -239,6 +245,175 @@ class DataManager:
     def get_diary_map(self):
         """Return {date_str: diary_entry} for O(1) lookup by date."""
         return {d["date"]: d for d in self.data.get("diary", [])}
+
+    # ── Discover / Insights ──────────────────────────
+
+    def add_insight(self, insight_data):
+        """Create a new insight (hypothesis) from AI analysis."""
+        existing = self.data.get("insights", [])
+        iid = max([i.get("id", 0) for i in existing], default=0) + 1
+        insight = {
+            "id": iid,
+            "type": insight_data.get("type", "hypothesis"),
+            "title": insight_data.get("title", ""),
+            "hypothesis": insight_data.get("hypothesis", ""),
+            "evidence": insight_data.get("evidence", []),
+            "confidence": insight_data.get("confidence", 0.5),
+            "status": insight_data.get("status", "pending"),
+            "question": insight_data.get("question", ""),
+            "user_answer": insight_data.get("user_answer", None),
+            "created": datetime.now().strftime("%Y-%m-%d"),
+            "category": insight_data.get("category", "general"),
+            "confirmed_at": insight_data.get("confirmed_at", None),
+            "follow_up": insight_data.get("follow_up", None),
+        }
+        self.data.setdefault("insights", []).append(insight)
+        self.save()
+        return insight
+
+    def update_insight(self, iid, **kw):
+        """Partial update an insight by id."""
+        for i in self.data.get("insights", []):
+            if i["id"] == iid:
+                i.update(kw)
+                self.save()
+                return True
+        return False
+
+    def get_insights(self, status=None):
+        """Get all insights, optionally filtered by status."""
+        insights = self.data.get("insights", [])
+        if status:
+            return [i for i in insights if i.get("status") == status]
+        return sorted(insights, key=lambda x: x.get("id", 0), reverse=True)
+
+    def get_pending_insight_count(self):
+        """Return count of pending (unanswered) insights."""
+        return len(self.get_insights("pending"))
+
+    def set_discover_last_run(self, dt=None):
+        self.data["discover_last_run"] = dt or datetime.now().strftime("%Y-%m-%d %H:%M")
+        self.save()
+
+    def get_discover_last_run(self):
+        return self.data.get("discover_last_run")
+
+    def aggregate_for_discover(self):
+        """Aggregate user data into a structured summary for AI pattern analysis."""
+        tasks = self.data.get("tasks", [])
+        diaries = self.data.get("diary", [])
+        from collections import defaultdict
+
+        # ── Task completion stats ──
+        total_tasks = len(tasks)
+        completed = sum(1 for t in tasks if t["status"] == "completed")
+        pending = total_tasks - completed
+
+        # Completion by day-of-week
+        dow_comp = defaultdict(lambda: {"total": 0, "done": 0})
+        for t in tasks:
+            pd_date = t.get("plan_date", "")
+            if pd_date:
+                try:
+                    dow = datetime.strptime(pd_date, "%Y-%m-%d").strftime("%A")
+                    dow_comp[dow]["total"] += 1
+                    if t["status"] == "completed":
+                        dow_comp[dow]["done"] += 1
+                except Exception:
+                    pass
+
+        # Completion by subject
+        subj_stats = defaultdict(lambda: {"total": 0, "done": 0})
+        for t in tasks:
+            subj = t.get("subject", "Other")
+            subj_stats[subj]["total"] += 1
+            if t["status"] == "completed":
+                subj_stats[subj]["done"] += 1
+
+        # Completion by priority band
+        pbands = {"high (>=80)": {"total": 0, "done": 0},
+                  "medium (50-79)": {"total": 0, "done": 0},
+                  "low (<50)": {"total": 0, "done": 0}}
+        for t in tasks:
+            p = t.get("priority", 50)
+            band = "high (>=80)" if p >= 80 else ("medium (50-79)" if p >= 50 else "low (<50)")
+            pbands[band]["total"] += 1
+            if t["status"] == "completed":
+                pbands[band]["done"] += 1
+
+        # Deadline adherence
+        on_time = late = no_deadline = 0
+        for t in tasks:
+            dl = t.get("deadline", "")
+            if not dl:
+                no_deadline += 1
+                continue
+            try:
+                if t["status"] == "completed":
+                    created = t.get("created", "")[:10]
+                    if created and created <= dl:
+                        on_time += 1
+                    else:
+                        late += 1
+            except Exception:
+                pass
+
+        # ── Diary trends (last 14 days) ──
+        mood_trend = []
+        sleep_trend = []
+        for d in sorted(diaries, key=lambda x: x.get("date", ""))[-14:]:
+            a = d.get("analysis", {})
+            if isinstance(a, dict):
+                mood = a.get("mood", {})
+                if isinstance(mood, dict):
+                    mood_trend.append({
+                        "date": d["date"],
+                        "score": mood.get("score"),
+                        "primary": mood.get("primary"),
+                    })
+                slp = a.get("sleep", {})
+                if isinstance(slp, dict):
+                    sleep_trend.append({
+                        "date": d["date"],
+                        "hours": slp.get("hours"),
+                        "quality": slp.get("quality"),
+                    })
+
+        # ── Time estimation accuracy ──
+        est_vs_actual = []
+        for t in tasks:
+            est = t.get("estimated_hours", 0)
+            act = t.get("actual_minutes", 0) / 60.0
+            if est > 0:
+                est_vs_actual.append({
+                    "title": t["title"],
+                    "estimated_h": est,
+                    "actual_h": round(act, 1),
+                })
+
+        # ── Recent highlights ──
+        recent_highlights = []
+        for d in diaries[-7:]:
+            a = d.get("analysis", {})
+            if isinstance(a, dict):
+                for h in a.get("highlights", []):
+                    recent_highlights.append(f"{d['date']}: {h}")
+
+        return {
+            "total_tasks": total_tasks,
+            "completed": completed,
+            "pending": pending,
+            "completion_rate": f"{int(completed / total_tasks * 100)}%" if total_tasks else "N/A",
+            "day_of_week_completion": dict(dow_comp),
+            "subject_stats": dict(subj_stats),
+            "priority_band_completion": dict(pbands),
+            "deadline_adherence": {"on_time": on_time, "late": late, "no_deadline": no_deadline},
+            "mood_trend_last_14_days": mood_trend,
+            "sleep_trend_last_14_days": sleep_trend,
+            "time_estimation_samples": est_vs_actual[:10],
+            "total_diary_entries": len(diaries),
+            "recent_diary_highlights": recent_highlights[:10],
+        }
 
     # ── Vision ────────────────────────────────────────
 
