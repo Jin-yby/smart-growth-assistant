@@ -97,11 +97,13 @@ class DataManager:
                     data["insights"] = []
                 if "discover_last_run" not in data:
                     data["discover_last_run"] = None
+                if "manual" not in data:
+                    data["manual"] = None
                 return data
             except Exception:
                 pass
         return {"tasks": [], "next_id": 1, "diary": [], "visions": [],
-                "insights": [], "discover_last_run": None, "api_key": ""}
+                "insights": [], "discover_last_run": None, "manual": None, "api_key": ""}
 
     def save(self):
         with open(self.filename, "w", encoding="utf-8") as f:
@@ -414,6 +416,32 @@ class DataManager:
             "total_diary_entries": len(diaries),
             "recent_diary_highlights": recent_highlights[:10],
         }
+
+    # ── Manual (Operating Manual) ───────────────────
+
+    def get_manual(self):
+        """Return the synthesized operating manual, or None."""
+        return self.data.get("manual")
+
+    def set_manual(self, manual_data):
+        """Store synthesized manual with metadata."""
+        self.data["manual"] = {
+            "last_synthesized": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "insight_count_at_synthesis": len(self.get_insights("confirmed")),
+            **manual_data,
+        }
+        self.save()
+
+    def get_confirmed_insight_count(self):
+        return len(self.get_insights("confirmed"))
+
+    def needs_resynthesis(self):
+        """True if confirmed count changed since last synthesis."""
+        manual = self.get_manual()
+        if not manual:
+            return self.get_confirmed_insight_count() >= 2
+        last_count = manual.get("insight_count_at_synthesis", 0)
+        return self.get_confirmed_insight_count() != last_count
 
     # ── Vision ────────────────────────────────────────
 

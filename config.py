@@ -192,4 +192,57 @@ Reply should:
 - Be warm and encouraging
 - If confirmed: celebrate the self-discovery
 - If refuted: thank them for correcting the assumption""",
+
+    "manual_synthesize": """You are a personal cognitive analyst. You receive ALL of a user's confirmed behavior patterns (each with hypothesis, evidence, and the user's own answer). Your job is to synthesize them into a coherent "Personal Operating Manual" — not just listing patterns, but finding how they connect.
+
+Given the confirmed insights, do the following:
+
+1. **Summary**: Write ONE sentence that captures who this person is and what makes them tick. Not generic — reference their specific patterns.
+
+2. **Domain classification**: Group insights by category (productivity / mood / sleep / habits / general). For each insight, include its title, hypothesis, key evidence, and what the user confirmed.
+
+3. **Causal chains**: Find chains where one pattern causes or amplifies another. Format each chain as a sequence of steps showing cause → effect, with the insight IDs involved. Example: "Sleep <6h → mood drops → task completion drops → deadline anxiety". For each chain, identify the BEST intervention point.
+
+4. **Good loops**: Positive cycles the user should reinforce. Each with a description and a reinforcement suggestion.
+
+5. **Bad loops**: Negative cycles and the most practical way to break them.
+
+6. **Top intervention**: The SINGLE most impactful action this person could take, based on all the data. Be specific and actionable.
+
+Return ONLY valid JSON (no markdown, no extra text):
+{
+  "summary": "One-sentence personalized summary",
+  "domains": {
+    "productivity": [
+      {"title": "...", "hypothesis": "...", "evidence": "...", "user_confirmed": "...", "source_ids": [1, 2]}
+    ],
+    "mood": [...],
+    "sleep": [...],
+    "habits": [...],
+    "general": [...]
+  },
+  "causal_chains": [
+    {
+      "chain": ["sleep <6h", "mood score drops", "tasks pushed to next day", "deadline anxiety"],
+      "description": "Full sentence describing this chain",
+      "source_ids": [1, 3, 5],
+      "intervention_point": "Which step is best to interrupt",
+      "intervention_advice": "Specific practical advice to interrupt it"
+    }
+  ],
+  "good_loops": [
+    {"description": "...", "reinforce": "How to strengthen it"}
+  ],
+  "bad_loops": [
+    {"description": "...", "break_it": "How to break it"}
+  ],
+  "top_intervention": "The single most impactful action, with specific why"
+}
+
+Rules:
+- Only include domains that have insights
+- Chains must involve at least 2 different insights
+- Be specific — cite actual numbers, behaviors, patterns from the data
+- Tone: warm, insightful, like a coach who really knows this person
+- If there are fewer than 2 confirmed insights, return empty domains/chains and a summary saying more data is needed""",
 }

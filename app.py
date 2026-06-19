@@ -73,6 +73,7 @@ class App:
             ("ai", "🤖  AI Planner"),
             ("vision", "🌟  Vision"),
             ("discover", "🔍  Discover"),
+            ("manual", "📖  Manual"),
         ]:
             b = tk.Label(self.sidebar, text=text, font=("Segoe UI", 12), bg=config.COLORS["bg_side"],
                          fg=config.COLORS["text_sub"], anchor="w", padx=24, pady=11, cursor="hand2")
@@ -123,6 +124,7 @@ class App:
             "ai": self._show_ai,
             "vision": self._show_vision,
             "discover": self._show_discover,
+            "manual": self._show_manual,
         }[key]()
 
     def _clear_main(self):
@@ -1629,6 +1631,16 @@ class App:
         if confirmed_insights:
             for insight in confirmed_insights:
                 InsightCard(cc, insight).pack(fill="x", pady=4)
+            # Link to Operating Manual
+            link_f = tk.Frame(cc, bg=config.COLORS["bg_card"])
+            link_f.pack(fill="x", pady=(8, 0))
+            manual_link = tk.Label(link_f,
+                                   text=f"📖  View all {len(confirmed_insights)} patterns in Operating Manual →",
+                                   font=("Segoe UI", 10, "bold"),
+                                   bg=config.COLORS["bg_card"], fg=config.COLORS["purple"],
+                                   cursor="hand2")
+            manual_link.pack(side="right")
+            manual_link.bind("<Button-1>", lambda e: self._nav_to_page("manual"))
         else:
             tk.Label(cc,
                      text="Answer AI's questions above to build your self-knowledge base.",
@@ -1807,9 +1819,354 @@ class App:
         self._update_discover_badge()
         self._show_discover()
 
+        # Suggest re-synthesis if manual needs updating
+        if status == "confirmed" and self.db.needs_resynthesis():
+            manual = self.db.get_manual()
+            confirmed_now = self.db.get_confirmed_insight_count()
+            if manual:
+                # Manual exists but is stale
+                def _hint_resynth():
+                    if messagebox.askyesno(
+                        "Update Manual?",
+                        f"You now have {confirmed_now} confirmed patterns.\n"
+                        "Your Operating Manual may be out of date.\n\n"
+                        "Re-synthesize now?"
+                    ):
+                        self._nav_to_page("manual")
+                        self.win.after(300, self._run_manual_synthesis)
+                self.win.after(500, _hint_resynth)
+            elif confirmed_now >= 2:
+                # No manual yet, enough data
+                def _hint_first():
+                    if messagebox.askyesno(
+                        "Create Manual?",
+                        f"You have {confirmed_now} confirmed patterns — enough "
+                        "to synthesize your first Operating Manual!\n\n"
+                        "Create it now?"
+                    ):
+                        self._nav_to_page("manual")
+                        self.win.after(300, self._run_manual_synthesis)
+                self.win.after(500, _hint_first)
+
         if reply:
             title = "✅ Insight Confirmed!" if status == "confirmed" else "❌ Insight Refuted"
             messagebox.showinfo(title, reply)
+
+    # ═══ 7. Manual — Operating Manual ═══
+    def _show_manual(self):
+        self._clear_main()
+        _, __, inner = self._scroll(self.main_area)
+
+        # Header
+        tk.Label(inner, text="📖  My Operating Manual", font=("Segoe UI", 20, "bold"),
+                 bg=config.COLORS["bg_main"], fg=config.COLORS["text_main"]
+                 ).pack(fill="x", padx=28, pady=(18, 4))
+        tk.Label(inner,
+                 text="Synthesized from your confirmed patterns — a living guide to how you work best.",
+                 font=("Segoe UI", 10), bg=config.COLORS["bg_main"],
+                 fg=config.COLORS["text_sub"]).pack(fill="x", padx=28, pady=(0, 12))
+
+        manual = self.db.get_manual()
+        confirmed_count = self.db.get_confirmed_insight_count()
+
+        # ── Action bar ──
+        btn_frame = tk.Frame(inner, bg=config.COLORS["bg_main"])
+        btn_frame.pack(fill="x", padx=28, pady=(0, 16))
+
+        needs_update = self.db.needs_resynthesis()
+        syn_btn = tk.Label(btn_frame,
+                           text="🔄  Re-synthesize" if manual else "🔬  Synthesize My Patterns",
+                           font=("Segoe UI", 12, "bold"),
+                           bg=config.COLORS["orange"] if (needs_update and manual) else config.COLORS["purple"],
+                           fg="#FFF", padx=20, pady=12, cursor="hand2")
+        syn_btn.pack(side="left")
+        syn_btn.bind("<Button-1>", lambda e: self._run_manual_synthesis())
+
+        self.manual_status = tk.Label(btn_frame, text="",
+                                      font=("Segoe UI", 9),
+                                      bg=config.COLORS["bg_main"],
+                                      fg=config.COLORS["text_muted"])
+        self.manual_status.pack(side="left", padx=14)
+
+        if manual:
+            last = manual.get("last_synthesized", "")
+            count = manual.get("insight_count_at_synthesis", 0)
+            tk.Label(btn_frame,
+                     text=f"Synthesized: {last}  ·  from {count} insights",
+                     font=("Segoe UI", 9), bg=config.COLORS["bg_main"],
+                     fg=config.COLORS["text_muted"]).pack(side="right")
+
+        if confirmed_count < 2 and not manual:
+            # ── Empty state ──
+            ec = Card(inner, title="🔍  Not enough data yet", icon="", pad=20)
+            ec.pack(fill="x", padx=28, pady=(0, 16))
+            tk.Label(ec,
+                     text="Your Operating Manual is built from confirmed patterns.\n\n"
+                          "How to get started:\n"
+                          "1. Go to Discover → Analyze My Patterns\n"
+                          "2. Answer the AI's questions to confirm patterns\n"
+                          "3. Come back here when you have at least 2 confirmed insights\n\n"
+                          f"You currently have {confirmed_count} confirmed insight{'s' if confirmed_count != 1 else ''}.",
+                     font=("Segoe UI", 11), bg=config.COLORS["bg_card"],
+                     fg=config.COLORS["text_sub"], wraplength=800, justify="left").pack(pady=8)
+            return
+
+        if not manual:
+            # Has enough insights but no manual yet
+            ec = Card(inner, title="✨  Ready to synthesize!", icon="", pad=20)
+            ec.pack(fill="x", padx=28, pady=(0, 16))
+            tk.Label(ec,
+                     text=f"You have {confirmed_count} confirmed patterns.\n"
+                          "Let AI weave them into your personal Operating Manual.",
+                     font=("Segoe UI", 11), bg=config.COLORS["bg_card"],
+                     fg=config.COLORS["text_sub"]).pack(pady=8)
+            return
+
+        # ── Render Manual ──
+
+        # Summary card
+        summary = manual.get("summary", "")
+        if summary:
+            sc = tk.Frame(inner, bg=config.COLORS["bg_accent"],
+                          highlightbackground=config.COLORS["purple"], highlightthickness=2)
+            sc.pack(fill="x", padx=28, pady=(0, 16))
+            tk.Label(sc, text="💡 " + summary, font=("Segoe UI", 13, "bold"),
+                     bg=config.COLORS["bg_accent"], fg=config.COLORS["purple"],
+                     wraplength=1200, justify="left").pack(padx=22, pady=16)
+
+        # Causal chains
+        chains = manual.get("causal_chains", [])
+        if chains:
+            cc = Card(inner, title="🔗  Your Causal Chains", icon="", pad=16)
+            cc.pack(fill="x", padx=28, pady=(0, 14))
+            for ch in chains:
+                chain_steps = ch.get("chain", [])
+                desc = ch.get("description", "")
+                intervention = ch.get("intervention_point", "")
+                advice = ch.get("intervention_advice", "")
+
+                # Chain visual: step → step → step
+                cf = tk.Frame(cc, bg=config.COLORS["bg_card"])
+                cf.pack(fill="x", pady=(4, 6))
+
+                parts = []
+                for i, step in enumerate(chain_steps):
+                    parts.append(step)
+                    if i < len(chain_steps) - 1:
+                        parts.append("→")
+                chain_text = "  ".join(
+                    f"⟶ {p}" if i > 0 and p != "→" else p
+                    for i, p in enumerate(parts)
+                )
+                # Simpler: join with arrows in between
+                chain_display = "  →  ".join(chain_steps)
+                tk.Label(cf, text=chain_display, font=("Segoe UI", 11, "bold"),
+                         bg=config.COLORS["bg_card"], fg=config.COLORS["text_main"],
+                         wraplength=1000).pack(anchor="w", pady=(0, 4))
+                if desc:
+                    tk.Label(cf, text=desc, font=("Segoe UI", 10, "italic"),
+                             bg=config.COLORS["bg_card"], fg=config.COLORS["text_sub"],
+                             wraplength=1000, justify="left").pack(anchor="w", pady=(0, 6))
+
+                # Intervention
+                if intervention:
+                    intv_f = tk.Frame(cf, bg=config.COLORS["bg_input"])
+                    intv_f.pack(fill="x", pady=(0, 4))
+                    tk.Label(intv_f, text=f"🎯  Best intervention: {intervention}",
+                             font=("Segoe UI", 9, "bold"),
+                             bg=config.COLORS["bg_input"], fg=config.COLORS["orange"]
+                             ).pack(anchor="w", padx=10, pady=6)
+                    if advice:
+                        tk.Label(intv_f, text=advice, font=("Segoe UI", 9),
+                                 bg=config.COLORS["bg_input"], fg=config.COLORS["text_sub"],
+                                 wraplength=1000, justify="left").pack(anchor="w", padx=10, pady=(0, 6))
+
+                # Separator between chains
+                tk.Frame(cf, bg=config.COLORS["divider"], height=1).pack(fill="x", pady=(4, 0))
+
+        # Domains accordion
+        domains = manual.get("domains", {})
+        if domains:
+            dc = Card(inner, title="📂  Patterns by Domain", icon="", pad=16)
+            dc.pack(fill="x", padx=28, pady=(0, 14))
+
+            domain_icons = {
+                "productivity": "⚡", "mood": "🧠", "sleep": "😴",
+                "habits": "🔄", "general": "💡",
+            }
+            self.domain_expanded = {}
+
+            for domain_key, items in domains.items():
+                if not items:
+                    continue
+                icon = domain_icons.get(domain_key, "📌")
+                label = domain_key.capitalize()
+
+                # Domain header (clickable toggle)
+                d_header = tk.Frame(dc, bg=config.COLORS["bg_card"], cursor="hand2")
+                d_header.pack(fill="x", pady=(6, 0))
+
+                self.domain_expanded[domain_key] = tk.BooleanVar(value=True)
+                toggle_lbl = tk.Label(d_header, text="▼", font=("Segoe UI", 10),
+                                      bg=config.COLORS["bg_card"], fg=config.COLORS["purple"])
+                toggle_lbl.pack(side="left", padx=(0, 8))
+
+                tk.Label(d_header, text=f"{icon}  {label}",
+                         font=("Segoe UI", 12, "bold"),
+                         bg=config.COLORS["bg_card"], fg=config.COLORS["text_main"]
+                         ).pack(side="left")
+                tk.Label(d_header, text=f"({len(items)})",
+                         font=("Segoe UI", 9),
+                         bg=config.COLORS["bg_card"], fg=config.COLORS["text_muted"]
+                         ).pack(side="left", padx=6)
+
+                # Domain content container
+                d_content = tk.Frame(dc, bg=config.COLORS["bg_card"])
+                d_content.pack(fill="x", pady=(4, 8))
+
+                for item in items:
+                    ir = tk.Frame(d_content, bg=config.COLORS["bg_input"],
+                                  highlightbackground=config.COLORS["border"], highlightthickness=1)
+                    ir.pack(fill="x", pady=2)
+                    tk.Label(ir, text=f"• {item.get('title', '')}",
+                             font=("Segoe UI", 10, "bold"),
+                             bg=config.COLORS["bg_input"], fg=config.COLORS["text_main"],
+                             wraplength=1000, anchor="w", justify="left"
+                             ).pack(anchor="w", padx=12, pady=(8, 2))
+                    hyp = item.get("hypothesis", "")
+                    if hyp:
+                        tk.Label(ir, text=hyp, font=("Segoe UI", 9),
+                                 bg=config.COLORS["bg_input"], fg=config.COLORS["text_sub"],
+                                 wraplength=1000, anchor="w", justify="left"
+                                 ).pack(anchor="w", padx=12, pady=(0, 2))
+                    confirmed = item.get("user_confirmed", "")
+                    if confirmed:
+                        tk.Label(ir, text=f'💬  You said: "{confirmed}"',
+                                 font=("Segoe UI", 9, "italic"),
+                                 bg=config.COLORS["bg_input"], fg=config.COLORS["purple"],
+                                 wraplength=1000, anchor="w", justify="left"
+                                 ).pack(anchor="w", padx=12, pady=(0, 6))
+
+                def make_toggle(dk, lbl, cont):
+                    def _toggle():
+                        if self.domain_expanded[dk].get():
+                            cont.pack_forget()
+                            lbl.config(text="▶")
+                            self.domain_expanded[dk].set(False)
+                        else:
+                            cont.pack(fill="x", pady=(4, 8), after=lbl.master)
+                            lbl.config(text="▼")
+                            self.domain_expanded[dk].set(True)
+                    return _toggle
+
+                d_header.bind("<Button-1>",
+                              lambda e, dk=domain_key, tl=toggle_lbl, dc2=d_content:
+                              make_toggle(dk, tl, dc2)())
+
+        # Good loops & Bad loops side by side
+        gl = manual.get("good_loops", [])
+        bl = manual.get("bad_loops", [])
+        if gl or bl:
+            loops_f = tk.Frame(inner, bg=config.COLORS["bg_main"])
+            loops_f.pack(fill="x", padx=28, pady=(0, 14))
+
+            if gl:
+                gc = Card(loops_f, title="🟢  Good Loops — Reinforce These", icon="", pad=14)
+                gc.pack(side="left", fill="both", expand=True, padx=(0, 8))
+                for loop in gl:
+                    tk.Label(gc, text=f"🔄 {loop.get('description', '')}",
+                             font=("Segoe UI", 10), bg=config.COLORS["bg_card"],
+                             fg=config.COLORS["text_main"], wraplength=500,
+                             anchor="w", justify="left").pack(anchor="w", pady=2)
+                    reinforce = loop.get("reinforce", "")
+                    if reinforce:
+                        tk.Label(gc, text=f"💪 {reinforce}", font=("Segoe UI", 9),
+                                 bg=config.COLORS["bg_card"], fg=config.COLORS["green"],
+                                 wraplength=500, anchor="w", justify="left").pack(
+                            anchor="w", pady=(0, 8))
+
+            if bl:
+                bc = Card(loops_f, title="🔴  Bad Loops — Break These", icon="", pad=14)
+                bc.pack(side="right", fill="both", expand=True, padx=(8, 0))
+                for loop in bl:
+                    tk.Label(bc, text=f"⚠️ {loop.get('description', '')}",
+                             font=("Segoe UI", 10), bg=config.COLORS["bg_card"],
+                             fg=config.COLORS["text_main"], wraplength=500,
+                             anchor="w", justify="left").pack(anchor="w", pady=2)
+                    break_it = loop.get("break_it", "")
+                    if break_it:
+                        tk.Label(bc, text=f"🔧 {break_it}", font=("Segoe UI", 9),
+                                 bg=config.COLORS["bg_card"], fg=config.COLORS["red"],
+                                 wraplength=500, anchor="w", justify="left").pack(
+                            anchor="w", pady=(0, 8))
+
+        # Top intervention
+        top_int = manual.get("top_intervention", "")
+        if top_int:
+            tic = tk.Frame(inner, bg=config.COLORS["purple_dark"],
+                           highlightbackground=config.COLORS["purple"], highlightthickness=2)
+            tic.pack(fill="x", padx=28, pady=(0, 20))
+            tk.Label(tic, text="🎯  Your #1 Priority Right Now",
+                     font=("Segoe UI", 10, "bold"),
+                     bg=config.COLORS["purple_dark"], fg="#FFF"
+                     ).pack(anchor="w", padx=20, pady=(14, 2))
+            tk.Label(tic, text=top_int, font=("Segoe UI", 12),
+                     bg=config.COLORS["purple_dark"], fg="#FFF",
+                     wraplength=1200, justify="left").pack(anchor="w", padx=20, pady=(0, 14))
+
+    def _run_manual_synthesis(self):
+        """Trigger AI synthesis of confirmed insights into Operating Manual."""
+        if self.ai_loading:
+            return
+        if not self.api_key:
+            self._prompt_api_key()
+            return
+        if not self.api_key:
+            return
+
+        confirmed = self.db.get_insights("confirmed")
+        if len(confirmed) < 2:
+            messagebox.showinfo("Not Enough Data",
+                                "Need at least 2 confirmed insights to synthesize a manual.\n"
+                                f"You have {len(confirmed)}. Keep answering questions in Discover!")
+            return
+
+        self.ai_loading = True
+        self.manual_status.config(text="⏳  Synthesizing your patterns...")
+
+        # Build the user message with all confirmed insights
+        insights_for_ai = []
+        for ins in confirmed:
+            insights_for_ai.append({
+                "id": ins["id"],
+                "title": ins.get("title", ""),
+                "hypothesis": ins.get("hypothesis", ""),
+                "evidence": ins.get("evidence", []),
+                "category": ins.get("category", "general"),
+                "user_confirmed": ins.get("user_answer", ""),
+            })
+        user_msg = json.dumps(insights_for_ai, ensure_ascii=False, indent=2)
+
+        def _work():
+            result = AIClient.ask("manual_synthesize", user_msg, self.api_key)
+            self.win.after(0, lambda: self._show_manual_result(result))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _show_manual_result(self, result):
+        """Handle AI synthesis response."""
+        self.ai_loading = False
+        self.manual_status.config(text="")
+
+        if "error" in result:
+            messagebox.showerror("AI Error", result["error"])
+            return
+
+        self.db.set_manual(result)
+        self._show_manual()
+        messagebox.showinfo("Manual Ready",
+                            "Your Operating Manual has been synthesized!\n\n"
+                            "It will update as you confirm more patterns about yourself.")
 
     # ═══ Run ═══
     def run(self):
